@@ -4,7 +4,9 @@ from pydantic import BaseModel
 from app.ingest import ingest, extract_text_from_pdf, extract_text_from_url
 from app.retriever import retrieve
 from app.agent import run_agent
+from app.config import COLLECTION_NAME
 import logging
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,9 +51,28 @@ async def ingest_url(req: URLRequest):
 @app.post("/query")
 async def query(req: QueryRequest):
     logger.info(f"Query received: {req.question}")
-    if req.use_agent:
-        result = await run_agent(req.question)
-    else:
-        docs = retrieve(req.question)
-        result = {"answer": "Direct retrieval mode", "sources": docs}
-    return result
+    try:
+        if req.use_agent:
+            result = await asyncio.wait_for(
+                run_agent(req.question),
+                timeout=240.0
+            )
+        else:
+            docs = retrieve(req.question)
+            result = {"answer": "Direct retrieval mode", "sources": docs}
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "Query timed out — try a simpler question")
+    except Exception as e:
+        logger.error(f"Query error: {str(e)}")
+        raise HTTPException(500, str(e))
+
+@app.post("/reset")
+def reset_collection():
+    from app.ingest import client, ensure_collection
+    try:
+        client.delete_collection(COLLECTION_NAME)
+        ensure_collection()
+        return {"message": "Collection reset successfully"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
